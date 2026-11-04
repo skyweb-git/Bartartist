@@ -95,6 +95,8 @@ const chatbotRoutes = require('./routes/chatbot');
 const formRoutes = require('./routes/forms');
 const messageRoutes = require('./routes/messages');
 const paymentRoutes = require('./routes/payments');
+const couponRoutes = require('./routes/coupons');
+const ecommerceRoutes = require('./routes/ecommerce');
 const SiteSettings = require('./models/SiteSettings');
 const ArtDistrictConfig = require('./models/ArtDistrictConfig');
 const ArtDistrictRegistration = require('./models/ArtDistrictRegistration');
@@ -262,6 +264,8 @@ app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/forms', formRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/coupons', couponRoutes);
+app.use('/api/ecommerce', ecommerceRoutes);
 app.use('/', sitemapRoutes);
 
 // Health check

@@ -7,6 +7,7 @@ const ArtistProfile = require('../models/ArtistProfile');
 const Event = require('../models/Event');
 const EventForm = require('../models/EventForm');
 const FormSubmission = require('../models/FormSubmission');
+const Coupon = require('../models/Coupon');
 const { artistInviteEmail } = require('../utils/emailTemplates');
 
 const router = express.Router();
@@ -38,7 +39,24 @@ const adminAuth = async (req, res, next) => {
 // 1. Create Artist Membership Payment Session
 router.post('/create-membership-session', async (req, res) => {
   try {
-    const { name, email, phone, artForm, bio } = req.body;
+    const { name, email, phone, artForm, bio, couponCode } = req.body;
+
+    let baseAmount = 999.00;
+    let finalAmount = baseAmount;
+    let appliedCoupon = null;
+    let discountAmount = 0;
+
+    if (couponCode && typeof couponCode === 'string') {
+      const coupon = await Coupon.findOne({ code: couponCode.trim().toUpperCase() });
+      if (coupon) {
+        const val = coupon.validateForOrder(baseAmount, 'membership', email);
+        if (val.valid) {
+          discountAmount = val.discount;
+          finalAmount = Math.max(1, val.finalAmount);
+          appliedCoupon = coupon.code;
+        }
+      }
+    }
 
     if (!name || !email || !artForm) {
       return res.status(400).json({ error: 'Name, email, and art form are required' });
@@ -67,7 +85,7 @@ router.post('/create-membership-session', async (req, res) => {
         },
         body: JSON.stringify({
           order_id: orderId,
-          order_amount: 999.00, // Fixed membership fee
+          order_amount: finalAmount, // Membership fee (discount applied if coupon present)
           order_currency: 'INR',
           customer_details: {
             customer_id: email.replace(/[^a-zA-Z0-9]/g, '_'),
@@ -94,7 +112,7 @@ router.post('/create-membership-session', async (req, res) => {
     // Save pending payment record in DB with registration details in details
     const payment = new Payment({
       orderId,
-      amount: 999.00,
+      amount: finalAmount,
       currency: 'INR',
       status: 'pending',
       type: 'membership',
@@ -105,7 +123,10 @@ router.post('/create-membership-session', async (req, res) => {
         email,
         phone,
         artForm,
-        bio
+        bio,
+        couponCode: appliedCoupon,
+        discountAmount,
+        originalAmount: baseAmount
       }
     });
 
@@ -164,6 +185,26 @@ router.post('/verify-membership', async (req, res) => {
       payment.status = 'success';
       payment.paymentId = cfOrder.cf_order_id ? String(cfOrder.cf_order_id) : '';
       await payment.save();
+
+      // Record coupon usage if applied
+      if (payment.details?.couponCode) {
+        try {
+          const usedCoupon = await Coupon.findOne({ code: payment.details.couponCode });
+          if (usedCoupon) {
+            usedCoupon.timesUsed += 1;
+            usedCoupon.usedBy.push({
+              email: payment.email,
+              orderId: payment.orderId,
+              orderAmount: payment.amount,
+              discountApplied: payment.details.discountAmount || 0,
+              usedAt: new Date()
+            });
+            await usedCoupon.save();
+          }
+        } catch (couponErr) {
+          console.error('[COUPON] Error logging coupon usage in membership:', couponErr);
+        }
+      }
 
       // Elevate user and create ArtistProfile
       const { name, email, phone, artForm, bio } = payment.details;
@@ -256,7 +297,7 @@ router.post('/verify-membership', async (req, res) => {
 
 router.post('/create-event-session', async (req, res) => {
   try {
-    const { eventId, guestName, guestEmail, guestPhone, responses } = req.body;
+    const { eventId, guestName, guestEmail, guestPhone, responses, couponCode } = req.body;
 
     if (!eventId || !guestName || !guestEmail) {
       return res.status(400).json({ error: 'Event ID, name, and email are required' });
@@ -271,7 +312,22 @@ router.post('/create-event-session', async (req, res) => {
       return res.status(400).json({ error: 'This event is not a paid event' });
     }
 
-    const amount = Number(event.pricing.amount);
+    const baseAmount = Number(event.pricing.amount);
+    let finalAmount = baseAmount;
+    let appliedCoupon = null;
+    let discountAmount = 0;
+
+    if (couponCode && typeof couponCode === 'string') {
+      const coupon = await Coupon.findOne({ code: couponCode.trim().toUpperCase() });
+      if (coupon) {
+        const val = coupon.validateForOrder(baseAmount, 'events', guestEmail, eventId);
+        if (val.valid) {
+          discountAmount = val.discount;
+          finalAmount = Math.max(1, val.finalAmount);
+          appliedCoupon = coupon.code;
+        }
+      }
+    }
     const orderId = `order_event_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const cashfreeUrl = `${getCashfreeBaseUrl()}/orders`;
 
@@ -295,7 +351,7 @@ router.post('/create-event-session', async (req, res) => {
         },
         body: JSON.stringify({
           order_id: orderId,
-          order_amount: amount,
+          order_amount: finalAmount,
           order_currency: 'INR',
           customer_details: {
             customer_id: guestEmail.replace(/[^a-zA-Z0-9]/g, '_'),
@@ -322,7 +378,7 @@ router.post('/create-event-session', async (req, res) => {
     // Save pending payment record in DB
     const payment = new Payment({
       orderId,
-      amount,
+      amount: finalAmount,
       currency: 'INR',
       status: 'pending',
       type: 'event',
@@ -333,7 +389,10 @@ router.post('/create-event-session', async (req, res) => {
         guestName,
         guestEmail,
         guestPhone,
-        responses
+        responses,
+        couponCode: appliedCoupon,
+        discountAmount,
+        originalAmount: baseAmount
       }
     });
 
@@ -407,6 +466,26 @@ router.post('/verify-event', async (req, res) => {
       // If already success, another request completed the verification, return early.
       if (!updatedPayment) {
         return res.json({ success: true, message: 'Event payment already verified and registration completed' });
+      }
+
+      // Record coupon usage if applied
+      if (payment.details?.couponCode) {
+        try {
+          const usedCoupon = await Coupon.findOne({ code: payment.details.couponCode });
+          if (usedCoupon) {
+            usedCoupon.timesUsed += 1;
+            usedCoupon.usedBy.push({
+              email: payment.email,
+              orderId: payment.orderId,
+              orderAmount: payment.amount,
+              discountApplied: payment.details.discountAmount || 0,
+              usedAt: new Date()
+            });
+            await usedCoupon.save();
+          }
+        } catch (couponErr) {
+          console.error('[COUPON] Error logging coupon usage in event:', couponErr);
+        }
       }
 
       // Auto-submit Form and Add Attendee

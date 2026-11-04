@@ -83,25 +83,47 @@ const sendOTPEmail = async (email, otp) => {
   await transporter.sendMail(mailOptions);
 };
 
-// Middleware to verify Firebase token
+// Middleware to verify Firebase token or backend JWT
 const verifyFirebaseToken = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
     if (!token) {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    // Get Firebase admin instance from app locals
+    // 1. First attempt: Check if it's a backend-issued JWT token
+    try {
+      if (process.env.JWT_SECRET) {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded && (decoded.userId || decoded.id || decoded.firebaseUid)) {
+          const user = await User.findById(decoded.userId || decoded.id);
+          if (user) {
+            req.user = {
+              id: user._id,
+              userId: user._id,
+              uid: user.firebaseUid,
+              firebaseUid: user.firebaseUid,
+              email: user.email,
+              displayName: user.displayName,
+              photoURL: user.photoURL,
+              role: user.role
+            };
+            return next();
+          }
+        }
+      }
+    } catch (jwtErr) {
+      // Not a valid backend JWT, fall through to Firebase verification
+    }
+
+    // 2. Second attempt: Check Firebase Admin ID token
     const firebaseAdmin = req.app.locals.firebase;
     const firebaseReady = req.app.locals.firebaseInitialized;
 
     if (!firebaseReady || !firebaseAdmin) {
-      // Only log once per process start, not on every request
       if (!verifyFirebaseToken._warnedOnce) {
-        console.warn(
-          '⚠️  Firebase Admin is not initialized. Login/signup is disabled.\n' +
-          '   Add real Firebase service account credentials to server/.env to enable it.'
-        );
+        console.warn('Firebase Admin is not configured. Service unavailable.');
         verifyFirebaseToken._warnedOnce = true;
       }
       return res.status(503).json({
@@ -110,11 +132,10 @@ const verifyFirebaseToken = async (req, res, next) => {
       });
     }
 
-    // Verify the Firebase token
     const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
-
     req.user = {
       uid: decodedToken.uid,
+      firebaseUid: decodedToken.uid,
       email: decodedToken.email,
       displayName: decodedToken.name || decodedToken.email?.split('@')[0] || 'User',
       photoURL: decodedToken.picture || null
@@ -122,8 +143,7 @@ const verifyFirebaseToken = async (req, res, next) => {
 
     next();
   } catch (error) {
-    // Only log actual verification failures, not config errors
-    console.error('Firebase token verification error:', error.message);
+    console.error('Token verification error:', error.message);
     res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
@@ -179,7 +199,8 @@ router.post('/login', verifyFirebaseToken, async (req, res) => {
 // Get current user
 router.get('/me', verifyFirebaseToken, async (req, res) => {
   try {
-    const user = await User.findOne({ firebaseUid: req.user.uid });
+    const query = (req.user.userId || req.user.id) ? { _id: req.user.userId || req.user.id } : ((req.user.uid || req.user.firebaseUid) ? { firebaseUid: req.user.uid || req.user.firebaseUid } : { email: req.user.email });
+    const user = await User.findOne(query);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -203,8 +224,9 @@ router.get('/me', verifyFirebaseToken, async (req, res) => {
 router.put('/profile', verifyFirebaseToken, async (req, res) => {
   try {
     const updates = req.body;
+    const query = (req.user.userId || req.user.id) ? { _id: req.user.userId || req.user.id } : ((req.user.uid || req.user.firebaseUid) ? { firebaseUid: req.user.uid || req.user.firebaseUid } : { email: req.user.email });
     const user = await User.findOneAndUpdate(
-      { firebaseUid: req.user.uid },
+      query,
       { $set: updates },
       { new: true, runValidators: true }
     );

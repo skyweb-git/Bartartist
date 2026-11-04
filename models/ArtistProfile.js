@@ -35,7 +35,20 @@ const artistProfileSchema = new mongoose.Schema(
       website: { type: String, default: '' }
     },
     bio: { type: String, default: '' },
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    isEcommerceSeller: { type: Boolean, default: false, index: true },
+    ecommercePayment: {
+      paymentLink: { type: String, default: '', trim: true },
+      upiId: { type: String, default: '', trim: true },
+      accountHolder: { type: String, default: '', trim: true },
+      accountNumber: { type: String, default: '', trim: true },
+      ifscCode: { type: String, default: '', trim: true },
+      bankName: { type: String, default: '', trim: true },
+      commissionRate: { type: Number, default: 0 },
+      payoutMethod: { type: String, default: 'link' },
+      notes: { type: String, default: '' },
+      updatedAt: { type: Date, default: Date.now }
+    }
   },
   { timestamps: true }
 );

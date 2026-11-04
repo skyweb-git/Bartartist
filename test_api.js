@@ -10,7 +10,7 @@ async function testEndpoint() {
     console.log('Testing with token:', testToken);
     console.log('JWT Secret:', process.env.JWT_SECRET || 'your_jwt_secret');
     
-    const response = await axios.get('https://sverxiioo.nanoprofiles.com/api/messages/conversation/6a02eb2cfde49e16f7c88601', {
+    const response = await axios.get('http://localhost:5000/api/messages/conversation/6a02eb2cfde49e16f7c88601', {
       headers: { Authorization: 'Bearer ' + testToken }
     });
     

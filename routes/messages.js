@@ -206,6 +206,9 @@ router.post('/', async (req, res) => {
 
     const recipientAsUser = await User.findById(recipientId).catch(() => null);
     if (recipientAsUser) {
+      if (recipientAsUser.role === 'admin' && decoded.role !== 'admin') {
+        return res.status(403).json({ error: 'Replies are disabled for official broadcast announcements' });
+      }
       recipientType = recipientAsUser.role === 'artist' ? 'artist' : 'user';
     } else {
       const recipientAsArtist = await ArtistProfile.findById(recipientId).catch(() => null);

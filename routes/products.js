@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const Product = require('../models/Product');
+const ArtistProfile = require('../models/ArtistProfile');
 const { authenticate } = require('../middleware/auth');
 const { uploadImage } = require('../services/mediaStorage');
 
@@ -67,22 +68,54 @@ router.get('/', async (req, res) => {
       if (maxPrice) query.price.$lte = parseFloat(maxPrice);
     }
 
-    if (search) {
-      query.$text = { $search: search };
+    if (search && search.trim()) {
+      const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const searchRegex = new RegExp(escaped, 'i');
+
+      let matchingArtistIds = [];
+      try {
+        const matchingArtists = await ArtistProfile.find({
+          name: { $regex: searchRegex }
+        }).select('_id');
+        matchingArtistIds = matchingArtists.map(a => a._id);
+      } catch (err) {
+        console.error('Artist search regex error:', err);
+      }
+
+      query.$or = [
+        { name: { $regex: searchRegex } },
+        { description: { $regex: searchRegex } },
+        { category: { $regex: searchRegex } },
+        { tags: { $in: [searchRegex] } },
+        { artistProfile: { $in: matchingArtistIds } }
+      ];
     }
 
-    // Sort options
-    const sort = {};
-    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    // Sort options - Prioritize artworks with buy option (priced and available) at the top!
+    let sort = {};
+    if (!req.query.sortBy || sortBy === 'createdAt') {
+      sort = { price: -1, createdAt: -1 };
+    } else {
+      sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    }
 
     // Execute query
-    const products = await Product.find(query)
+    const rawProducts = await Product.find(query)
       .populate('artist', 'displayName photoURL')
-      .populate('artistProfile', 'name image artForm location social bio')
+      .populate('artistProfile', 'name image artForm location social bio isEcommerceSeller ecommercePayment')
       .sort(sort)
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .exec();
+
+    // In-memory sort to guarantee buyable products are strictly at the top
+    const products = [...rawProducts].sort((a, b) => {
+      const aCanBuy = a.status === 'available' && Number(a.price) > 0;
+      const bCanBuy = b.status === 'available' && Number(b.price) > 0;
+      if (aCanBuy && !bCanBuy) return -1;
+      if (!aCanBuy && bCanBuy) return 1;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
 
     const total = await Product.countDocuments(query);
 
@@ -106,7 +139,7 @@ router.get('/:id', async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
       .populate('artist', 'displayName photoURL profile')
-      .populate('artistProfile', 'name image artForm location social bio');
+      .populate('artistProfile', 'name image artForm location social bio isEcommerceSeller ecommercePayment');
 
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
